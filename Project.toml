@@ -1,0 +1,14 @@
+name = "RectilinearArrays"
+uuid = "c4ce6314-bb25-4c3c-8ac7-79b9a10ce1fc"
+authors = ["Aiden Rohrbach <arohrbachj@protonmail.com>"]
+version = "0.1.0"
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+GPUArrays = "0c68f7d7-f131-5f86-a1c3-88cf8149b2d7"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+
+[compat]
+Adapt = "4.3.0"
+GPUArrays = "11.2.3"
+KernelAbstractions = "0.9.38"
