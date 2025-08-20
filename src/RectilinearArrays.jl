@@ -20,6 +20,9 @@ struct RectilinearArray{T,N,D,A<:AbstractArray{T,D},K,M} <: AbstractArray{T,N}
   valid_indices::NTuple{M,Int}
 end
 
+const AnyRectilinearArray{T,N} = Union{RectilinearArray{T,N}, WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N}}}
+# mutable struct CuArray{T,N,M} <: AbstractGPUArray{T,N}
+
 # --- Begin special constructor functions --- #
 
 # Define a way to create an uninitalized RectilinearArray
@@ -238,19 +241,36 @@ end
 @inline function Base.getindex(A::RectilinearArray{T,N}, I::CartesianIndices) where {T,N}
   return RectilinearArray(reshape([A[i] for i in I], size(I)), A.fixed_indices)
 end
-# getindex for GPU arrays. Scalar indexing is disallowed, but slicing is not | NOT TYPE STABLE
+# getindex for GPU arrays. Scalar indexing is disallowed, but slicing is not
 @inline function Base.getindex(A::RectilinearArray{T,N,D,DA,K,M}, inds::Vararg{Union{Colon, UnitRange{Int64}}, N}) where {T,N,D,DA<:AbstractGPUArray,K,M}
     formatted_inds = ntuple(i -> inds[i] isa Colon ? UnitRange(axes(A)[i]) : inds[i]::UnitRange{Int64}, Val(N))
     gpu_view = view(A.data, _drop_index(formatted_inds, A.valid_indices)...)
     shape::NTuple{N,Base.OneTo{Int}} = Base.index_shape(formatted_inds...)
     result_size = ntuple(i -> shape[i].stop, Val(N))
-    return RectilinearArray{T,N,ndims(gpu_view),typeof(gpu_view),K,M}(gpu_view,result_size, A.fixed_indices, A.valid_indices)
+    return RectilinearArray{T,N,ndims(gpu_view),typeof(gpu_view).parameters[3],K,M}(gpu_view,result_size, A.fixed_indices, A.valid_indices)
+end
+
+@inline function Base.getindex(A::RectilinearArray{T,N,D,DA,K,M}, inds::CartesianIndices) where {T,N,D,DA<:AbstractGPUArray,K,M}
+    is = ntuple(i -> i ∈ A.valid_indices ? UnitRange(axes(inds)[i]) : 1:1, ndims(A))
+    vcor = view(inds, is...)
+    vcors = ntuple(i -> vcor[1][A.valid_indices[i]]:vcor[end][A.valid_indices[i]], length(A.valid_indices))
+    gpu_view = view(A.data, vcors...)
+    shape::NTuple{N,Base.OneTo{Int}} = Base.index_shape(inds)
+    result_size = ntuple(i -> shape[i].stop, Val(N))
+    return RectilinearArray{T,N,ndims(gpu_view),typeof(gpu_view).parameters[3],K,M}(gpu_view, result_size, A.fixed_indices, A.valid_indices)
 end
 
 # Define the setindex! function
 @inline function Base.setindex!(A::RectilinearArray{T,N}, v, I::Vararg{Int,N}) where {T,N}
   A.data[_drop_index(I, A.valid_indices)...] = v
 end
+
+# KernelAbstractions backend function
+function KernelAbstractions.get_backend(A::RectilinearArray)
+    return KernelAbstractions.get_backend(A.data)
+end
+
+Base.eachindex(A::RectilinearArray) = eachindex(A.data) # NEEDS FIXING
 
 # Specify the resultant array when broadcasting with .
 Base.BroadcastStyle(::Type{<:RectilinearArray}) = Broadcast.ArrayStyle{RectilinearArray}()
@@ -275,44 +295,69 @@ find_ra(::Tuple{}) = nothing
 find_ra(a::RectilinearArray, rest) = a
 find_ra(::Any, rest) = find_ra(rest)
 
-# Specify how to index a RectilinearArray
-# Base.IndexStyle(::Type{<:RectilinearArray}) = IndexStyle(typeof(RectilinearArray).parameters[4])
-
-# These overloads are commented out because they may cause issues with iterating over an array
-# Overload eachindex for performance
-# Base.eachindex(A::RectilinearArray) = eachindex(A.data)
-
-# Overload CartesianIndices for performance
-# Base.CartesianIndices(A::RectilinearArray) = CartesianIndices(A.data)
-
-# Overload materialize! for in-place broadcasting; Changed broadcasting. This now essentially operates over the "largest" eachindex for the given arguments
-function Base.Broadcast.materialize!(dest::RectilinearArray, bc::Broadcast.Broadcasted)
-  bc = Broadcast.instantiate(bc)
-  ref = _largest_eachindex(dest, bc.args...)
-  ref_index_space = eachindex(ref)
-
-  for i in ref_index_space
-    args_i = map(arg -> begin
-      if arg isa AbstractArray
-        arg[i]
-      elseif arg isa Broadcast.Broadcasted
-        Base.materialize(arg)[i]
-      else
-        arg
-      end
+function Base.broadcasted(f, bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{RectilinearArray}, T}) where {T}
+    A = find_ra(bc)
+    Atype = typeof(A)
+    data_args = map(arg -> begin
+        if arg isa RectilinearArray
+            arg.data
+        elseif arg isa AbstractArray
+            _drop_dims(arg, A.fixed_indices, KernelAbstractions.get_backend(A))
+        else 
+            arg
+        end
     end, bc.args)
-    dest[i] = bc.f(args_i...)
-  end
-  return dest
+    data_bc = Broadcast.materialize(Broadcast.broadcasted(f, data_args...))
+    return RectilinearArray{Atype.parameters...}(data_bc, size(A), A.fixed_indices, A.valid_indices)
 end
+function Base.broadcast!(f, dest::RectilinearArray, args...)
+    println("Called!")
+    data_args = map(arg -> begin
+        if arg isa RectilinearArray
+            arg.data
+        elseif arg isa AbstractArray
+            _drop_dims(arg, dest.fixed_indices, KernelAbstractions.get_backend(dest))
+        else 
+            arg
+        end
+    end, args)
+    Base.broadcast!(f, dest.data, data_args...)
+end
+function copyto_assist(dest::SubArray)
+    A = parent(dest)
+    inds = dest.indices
+    revised_inds = _drop_index(inds, A.valid_indices)
+    return view(A.data, revised_inds...)
+end
+function arg_flatten(arg, A)
+    if arg isa RectilinearArray
+        return arg.data
+    elseif arg isa Base.Broadcast.Broadcasted
+        arg_flatten(Base.materialize(arg), A)
+    elseif arg isa AbstractArray
+        return _drop_dims(arg, A.fixed_indices, KernelAbstractions.get_backend(A))
+    else 
+        return arg
+    end
+end
+function Base.copyto!(dest::AnyRectilinearArray, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
+    A = find_ra(bc)
 
+    data_args = map(arg -> arg_flatten(arg, A), bc.args)
+
+    raw_bc = Broadcast.broadcasted(bc.f, data_args...)
+
+    if dest isa RectilinearArray
+        copyto!(dest.data, raw_bc)
+    else 
+        copyto!(copyto_assist(dest), raw_bc)
+    end
+
+    return dest
+end
 # Overload the all function to enforce boolean values
 function Base.all(A::RectilinearArray)
     return all(Bool.(A.data))
-end
-
-function KernelAbstractions.get_backend(A::RectilinearArray)
-    return KernelAbstractions.get_backend(A.data)
 end
 
 # --- End overload functions --- #
@@ -331,42 +376,24 @@ function _skip_index(A::AbstractArray, valid_indices::Tuple, inds::Int...)
   return getindex(A, skip...)
 end
 
-# function _drop_dims(A::AbstractArray, dims::Tuple)
-#   new_dims = ntuple(i -> i ∈ dims ? 1 : Colon(), Val(ndims(A)))
-#   return isa(A[new_dims...], Number) ? [A[new_dims...]] : A[new_dims...]
-# end
-@kernel function copy_kernel!(R, A, keep_dims)
+@kernel function copy_kernel!(R, A, dim_map)
     idx = @index(Global, Cartesian)
-    full_idx = ntuple(i -> (i ∈ keep_dims ? idx[findfirst(==(i), keep_dims)] : 1), ndims(A))
+    full_idx = ntuple(i -> dim_map[i] > 0 ? idx[dim_map[i]] : 1, ndims(A))
     @inbounds R[idx] = A[full_idx...]
 end
 function _drop_dims(A::AbstractArray, dims::Tuple{Vararg{Int}}, backend::Backend)
     nd = ndims(A)
     all_dims = collect(1:nd)
     keep_dims = ntuple(j -> filter(i -> i ∉ dims, all_dims)[j], nd - length(dims))
+    dim_map = ntuple(i -> i ∈ keep_dims ? findfirst(==(i), keep_dims) : 0, nd)
 
     new_shape = ntuple(i -> size(A, keep_dims[i]), nd - length(dims))
     R = similar(A, eltype(A), new_shape)
 
     kernel! = copy_kernel!(backend)
-    kernel!(R, A, keep_dims; ndrange=size(R))
+    kernel!(R, A, dim_map; ndrange=size(R))
 
     return R
-end
-
-function _largest_eachindex(A...)
-  maxlen = -1
-  best = nothing
-  for a in A
-    if isa(a, AbstractArray)
-      len = length(eachindex(a))
-      if len > maxlen
-        maxlen = len
-        best = a
-      end
-    end
-  end
-  return best
 end
 
 # --- End Helper functions --- #
