@@ -292,6 +292,7 @@ Base.CartesianIndices(A::RectilinearArray) = CartesianIndices(_insert_ones_at(si
 
 # Specify the resultant array when broadcasting with .
 Base.BroadcastStyle(::Type{<:RectilinearArray}) = Broadcast.ArrayStyle{RectilinearArray}()
+Base.BroadcastStyle(::Broadcast.ArrayStyle{RectilinearArray}, ::AbstractGPUArrayStyle) = Broadcast.ArrayStyle{RectilinearArray}()
 
 # Define the similar function
 function Base.similar(A::RectilinearArray{T,N}) where {T,N}
