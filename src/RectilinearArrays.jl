@@ -20,7 +20,11 @@ struct RectilinearArray{T,N,D,A<:AbstractArray{T,D},K,M} <: AbstractArray{T,N}
   valid_indices::NTuple{M,Int}
 end
 
-const AnyRectilinearArray{T,N} = Union{RectilinearArray{T,N}, WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N}}}
+const AnyRectilinearArray{T,N} = Union{
+    RectilinearArray{T,N,D,A,K,M} where {D,A<:AbstractArray{T,D},K,M},
+    WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N,D,A,K,M}} where {D,A<:AbstractArray{T,D},K,M},
+    SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false} where {D,A<:AbstractArray{T,D},K,M}
+}
 
 # --- Begin special constructor functions --- #
 
@@ -344,7 +348,7 @@ function copyto_assist(dest::SubArray)
     revised_inds = _drop_index(inds, A.valid_indices)
     return view(A.data, revised_inds...)
 end
-function Base.copyto!(dest::AnyRectilinearArray, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
+function Base.copyto!(dest::Type{<:AnyRectilinearArray}, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
     A = find_ra(bc)
 
     data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
