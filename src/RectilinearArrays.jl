@@ -283,6 +283,9 @@ Base.strides(A::RectilinearArray) = ntuple(i -> _prod_nminus1(size(A),i), length
 function Base.eachindex(A::RectilinearArray)
     s = _drop_index(strides(A), A.valid_indices)
     a = _drop_index(axes(A), A.valid_indices)
+    if isempty(a)
+        return (1,)
+    end
     return (sum(s[k] * (I[k] - 1) for k in eachindex(I)) + 1 for I in Iterators.product(a...))
 end
 Base.CartesianIndices(A::RectilinearArray) = CartesianIndices(_insert_ones_at(size(A.data), A.fixed_indices))
