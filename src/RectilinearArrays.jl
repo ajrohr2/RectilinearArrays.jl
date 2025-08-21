@@ -277,7 +277,7 @@ function Base.eachindex(A::RectilinearArray)
     a = _drop_index(axes(A), A.valid_indices)
     return (sum(s[k] * (I[k] - 1) for k in eachindex(I)) + 1 for I in Iterators.product(a...))
 end
-Base.CartesianIndices(A::RectilinearArray) = _insert_ones_at(CartesianIndices(A.data), A.fixed_indices)
+Base.CartesianIndices(A::RectilinearArray) = CartesianIndices(_insert_ones_at(size(A.data), A.fixed_indices))
 
 # Specify the resultant array when broadcasting with .
 Base.BroadcastStyle(::Type{<:RectilinearArray}) = Broadcast.ArrayStyle{RectilinearArray}()
@@ -416,14 +416,8 @@ function _prod_nminus1(t::Tuple, n::Int)
     end
     return acc
 end
-function _insert_ones_at(I::CartesianIndices, positions::Tuple{Vararg{Int}})
-    return ntuple(i -> CartesianIndex(
-        ntuple(j -> (
-            j in positions ? 1 : I[i][j - count(p -> p < j, positions)]
-            ), length(I[i]) + length(positions)
-            )
-        ), length(I)
-    )
+function _insert_ones_at(I::Tuple{Vararg{Int, N}}, positions::Tuple{Vararg{Int, M}}) where {N, M}
+    return ntuple(j -> (j in positions ? 1 : I[j - count(p -> p < j, positions)]), Val(N+M))
 end
 
 # --- End Helper functions --- #
