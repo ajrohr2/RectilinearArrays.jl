@@ -382,7 +382,7 @@ function _skip_index(A::AbstractArray, valid_indices::Tuple, inds::Int...)
   return getindex(A, skip...)
 end
 
-@kernel function copy_kernel!(R, A, dim_map)
+@kernel function copy_kernel!(R, A, ::Val{dim_map}) where {dim_map}
     idx = @index(Global, Cartesian)
     full_idx = ntuple(i -> dim_map[i] > 0 ? idx[dim_map[i]] : 1, ndims(A))
     @inbounds R[idx] = A[full_idx...]
@@ -397,7 +397,7 @@ function _drop_dims(A::AbstractArray, dims::Tuple{Vararg{Int}}, backend::Backend
     R = similar(A, eltype(A), new_shape)
 
     kernel! = copy_kernel!(backend)
-    kernel!(R, A, dim_map; ndrange=size(R))
+    kernel!(R, A, Val(dim_map); ndrange=size(R))
 
     return R
 end
