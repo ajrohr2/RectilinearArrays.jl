@@ -20,11 +20,11 @@ struct RectilinearArray{T,N,D,A<:AbstractArray{T,D},K,M} <: AbstractArray{T,N}
   valid_indices::NTuple{M,Int}
 end
 
-const AnyRectilinearArray{T,N} = Union{
-    RectilinearArray{T,N,D,A,K,M} where {D,A<:AbstractArray{T,D},K,M},
-    WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N,D,A,K,M}} where {D,A<:AbstractArray{T,D},K,M},
-    SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false} where {D,A<:AbstractArray{T,D},K,M}
-}
+# const AnyRectilinearArray{T,N} = Union{
+#     RectilinearArray{T,N,D,A,K,M} where {D,A<:AbstractArray{T,D},K,M},
+#     WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N,D,A,K,M}} where {D,A<:AbstractArray{T,D},K,M},
+#     SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false} where {D,A<:AbstractArray{T,D},K,M}
+# }
 
 # --- Begin special constructor functions --- #
 
@@ -348,7 +348,23 @@ function copyto_assist(dest::SubArray)
     revised_inds = _drop_index(inds, A.valid_indices)
     return view(A.data, revised_inds...)
 end
-function Base.copyto!(dest::AnyRectilinearArray, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
+# SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false}
+function Base.copyto!(dest::SubArray{T,N,RectilinearArray{T,N,D,DA,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false}, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}}) where {T,N,D,DA,K,M}
+    A = find_ra(bc)
+
+    data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
+
+    raw_bc = Broadcast.broadcasted(bc.f, data_args...)
+
+    if dest isa RectilinearArray
+        copyto!(dest.data, raw_bc)
+    else 
+        copyto!(copyto_assist(dest), raw_bc)
+    end
+
+    return dest
+end
+function Base.copyto!(dest::RectilinearArray, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
     A = find_ra(bc)
 
     data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
