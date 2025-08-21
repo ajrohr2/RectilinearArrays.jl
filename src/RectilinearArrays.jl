@@ -255,7 +255,7 @@ end
     gpu_view = view(A.data, _drop_index(formatted_inds, A.valid_indices)...)
     shape::NTuple{N,Base.OneTo{Int}} = Base.index_shape(formatted_inds...)
     result_size = ntuple(i -> shape[i].stop, Val(N))
-    return RectilinearArray{T,N,ndims(gpu_view),typeof(gpu_view).parameters[3],K,M}(gpu_view,result_size, A.fixed_indices, A.valid_indices)
+    return RectilinearArray{T,N,ndims(gpu_view),typeof(parent(gpu_view)),K,M}(gpu_view,result_size, A.fixed_indices, A.valid_indices)
 end
 
 @inline function Base.getindex(A::RectilinearArray{T,N,D,DA,K,M}, inds::CartesianIndices) where {T,N,D,DA<:AbstractGPUArray,K,M}
@@ -265,7 +265,7 @@ end
     gpu_view = view(A.data, vcors...)
     shape::NTuple{N,Base.OneTo{Int}} = Base.index_shape(inds)
     result_size = ntuple(i -> shape[i].stop, Val(N))
-    return RectilinearArray{T,N,ndims(gpu_view),typeof(gpu_view).parameters[3],K,M}(gpu_view, result_size, A.fixed_indices, A.valid_indices)
+    return RectilinearArray{T,N,ndims(gpu_view),typeof(parent(gpu_view)),K,M}(gpu_view, result_size, A.fixed_indices, A.valid_indices)
 end
 
 # Define the setindex! function
