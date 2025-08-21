@@ -21,7 +21,6 @@ struct RectilinearArray{T,N,D,A<:AbstractArray{T,D},K,M} <: AbstractArray{T,N}
 end
 
 const AnyRectilinearArray{T,N} = Union{RectilinearArray{T,N}, WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N}}}
-# mutable struct CuArray{T,N,M} <: AbstractGPUArray{T,N}
 
 # --- Begin special constructor functions --- #
 
@@ -190,6 +189,15 @@ function Base.show(io::IO, ::MIME"text/plain", A::RectilinearArray{T,N,M,DA,Ax1,
     println(io, summary_str)
     Base.print_array(io, A_show)
 end
+function Base.show(io::IO, ::MIME"text/plain", A::SubArray{J,K,R,I,L}) where {J,K,I,L,T,N,M,DA<:AbstractGPUArray,Ax1,Ax2,R<:RectilinearArray{T,N,M,DA,Ax1,Ax2}}
+    A = parent(A)
+    summary_str = Base.summary(A)
+    new_data = Array(A.data)
+    A_show = RectilinearArray{T,N,ndims(new_data),typeof(new_data),Ax1,Ax2}(new_data, size(A), A.fixed_indices, A.valid_indices)
+    io = IOContext(io, :compact => false)
+    println(io, summary_str)
+    Base.print_array(io, A_show)
+end
 
 # Define a zeros function
 @inline function zeros(::Type{T}, fixed_indices::Tuple{Vararg{Int}}, dims::Int...) where {T}
@@ -302,32 +310,28 @@ find_ra(::Tuple{}) = nothing
 find_ra(a::RectilinearArray, rest) = a
 find_ra(::Any, rest) = find_ra(rest)
 
+arg_flatten(arg::RectilinearArray, A) = arg.data
+arg_flatten(arg::Base.Broadcast.Broadcasted, A) = arg_flatten(Base.materialize(arg), A)
+arg_flatten(arg::AbstractArray, A) = _drop_dims(arg, A.fixed_indices, KernelAbstractions.get_backend(A))
+arg_flatten(arg, A) = arg
+
 function Base.broadcasted(f, bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{RectilinearArray}, T}) where {T}
     A = find_ra(bc)
     Atype = typeof(A)
-    data_args = map(arg -> begin
-        if arg isa RectilinearArray
-            arg.data
-        elseif arg isa AbstractArray
-            _drop_dims(arg, A.fixed_indices, KernelAbstractions.get_backend(A))
+    data_args = ntuple(i -> begin
+        if bc.args[i] isa RectilinearArray
+            bc.args[i].data
+        elseif bc.args[i] isa AbstractArray
+            _drop_dims(bc.args[i], A.fixed_indices, KernelAbstractions.get_backend(A))
         else 
-            arg
+            bc.args[i]
         end
-    end, bc.args)
+    end, length(bc.args))
     data_bc = Broadcast.materialize(Broadcast.broadcasted(f, data_args...))
     return RectilinearArray{Atype.parameters...}(data_bc, size(A), A.fixed_indices, A.valid_indices)
 end
 function Base.broadcast!(f, dest::RectilinearArray, args...)
-    println("Called!")
-    data_args = map(arg -> begin
-        if arg isa RectilinearArray
-            arg.data
-        elseif arg isa AbstractArray
-            _drop_dims(arg, dest.fixed_indices, KernelAbstractions.get_backend(dest))
-        else 
-            arg
-        end
-    end, args)
+    data_args = ntuple(i -> arg_flatten(args[i], dest), length(args))
     Base.broadcast!(f, dest.data, data_args...)
 end
 function copyto_assist(dest::SubArray)
@@ -336,21 +340,10 @@ function copyto_assist(dest::SubArray)
     revised_inds = _drop_index(inds, A.valid_indices)
     return view(A.data, revised_inds...)
 end
-function arg_flatten(arg, A)
-    if arg isa RectilinearArray
-        return arg.data
-    elseif arg isa Base.Broadcast.Broadcasted
-        arg_flatten(Base.materialize(arg), A)
-    elseif arg isa AbstractArray
-        return _drop_dims(arg, A.fixed_indices, KernelAbstractions.get_backend(A))
-    else 
-        return arg
-    end
-end
 function Base.copyto!(dest::AnyRectilinearArray, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
     A = find_ra(bc)
 
-    data_args = map(arg -> arg_flatten(arg, A), bc.args)
+    data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
 
     raw_bc = Broadcast.broadcasted(bc.f, data_args...)
 
