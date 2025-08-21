@@ -270,7 +270,13 @@ function KernelAbstractions.get_backend(A::RectilinearArray)
     return KernelAbstractions.get_backend(A.data)
 end
 
-Base.eachindex(A::RectilinearArray) = eachindex(A.data) # NEEDS FIXING
+# This strides function will return the strides for a dense array with the size of A. 
+Base.strides(A::RectilinearArray) = ntuple(i -> _prod_nminus1(size(A),i), length(size(A)))
+function Base.eachindex(A::RectilinearArray)
+    s = _drop_index(strides(A), A.valid_indices)
+    a = _drop_index(axes(A), A.valid_indices)
+    return (sum(s[k] * (I[k] - 1) for k in eachindex(I)) + 1 for I in Iterators.product(a...))
+end
 
 # Specify the resultant array when broadcasting with .
 Base.BroadcastStyle(::Type{<:RectilinearArray}) = Broadcast.ArrayStyle{RectilinearArray}()
@@ -370,6 +376,9 @@ end
 function _drop_index(indices::NTuple{N,UnitRange}, valid_indices::NTuple{M,Int}) where {N,M}
   return ntuple(i -> indices[valid_indices[i]], M)
 end
+function _drop_index(indices::NTuple{N,Base.OneTo{Int}}, valid_indices::NTuple{M,Int}) where {N,M}
+  return ntuple(i -> indices[valid_indices[i]], M)
+end
 
 function _skip_index(A::AbstractArray, valid_indices::Tuple, inds::Int...)
   skip = _drop_index(inds, valid_indices)
@@ -394,6 +403,17 @@ function _drop_dims(A::AbstractArray, dims::Tuple{Vararg{Int}}, backend::Backend
     kernel!(R, A, dim_map; ndrange=size(R))
 
     return R
+end
+function _prod_nminus1(t::Tuple, n::Int)
+    if n == 1 
+        return 1 
+    else
+        acc = one(eltype(t))
+        @inbounds for i in 1:n-1
+            acc *= t[i]
+        end
+    end
+    return acc
 end
 
 # --- End Helper functions --- #
