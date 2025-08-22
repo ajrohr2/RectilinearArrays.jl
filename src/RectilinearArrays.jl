@@ -20,11 +20,11 @@ struct RectilinearArray{T,N,D,A<:AbstractArray{T,D},K,M} <: AbstractArray{T,N}
   valid_indices::NTuple{M,Int}
 end
 
-# const AnyRectilinearArray{T,N} = Union{
-#     RectilinearArray{T,N,D,A,K,M} where {D,A<:AbstractArray{T,D},K,M},
-#     WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N,D,A,K,M}} where {D,A<:AbstractArray{T,D},K,M},
-#     SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false} where {D,A<:AbstractArray{T,D},K,M}
-# }
+const AnyRectilinearArray{T,N} = Union{
+    RectilinearArray{T,N,D,A,K,M} where {D,A<:AbstractArray{T,D},K,M},
+    WrappedArray{T,N,RectilinearArray,RectilinearArray{T,N,D,A,K,M}} where {D,A<:AbstractArray{T,D},K,M},
+    SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false} where {D,A<:AbstractArray{T,D},K,M}
+}
 
 # --- Begin special constructor functions --- #
 
@@ -294,9 +294,15 @@ function Base.eachindex(A::RectilinearArray)
 end
 Base.CartesianIndices(A::RectilinearArray) = CartesianIndices(_insert_ones_at(size(A.data), A.fixed_indices))
 
+struct RectilinearArrayStyle{N} <: Broadcast.AbstractArrayStyle{N} end
+RectilinearArrayStyle{N}(::Val{N}) where {N} = RectilinearArrayStyle{N}()
+
 # Specify the resultant array when broadcasting with .
-Base.BroadcastStyle(::Type{<:RectilinearArray}) = Broadcast.ArrayStyle{RectilinearArray}()
-Base.BroadcastStyle(::Broadcast.ArrayStyle{RectilinearArray}, ::AbstractGPUArrayStyle) = Broadcast.ArrayStyle{RectilinearArray}()
+Base.BroadcastStyle(::Type{<:RectilinearArray{T,N}}) where {T,N} = RectilinearArrayStyle{N}()
+Base.BroadcastStyle(::Broadcast.ArrayStyle{<:RectilinearArray{T,N}}) where {T,N} = RectilinearArrayStyle{N}()
+Base.BroadcastStyle(::RectilinearArrayStyle{N}, ::AbstractGPUArrayStyle) where {N} = RectilinearArrayStyle{N}()
+Base.BroadcastStyle(::Type{<:SubArray{T,N,RectilinearArray{T,N,D,DA,K,M},<:Tuple{Vararg{Union{Integer, UnitRange{Int}},N}}, false}}) where {T,N,D,DA<:AbstractArray{T,D},K,M} = RectilinearArrayStyle{N}()
+Base.BroadcastStyle(::Broadcast.ArrayStyle{<:SubArray{T,N,RectilinearArray{T,N,D,DA,K,M},<:Tuple{Vararg{Union{Integer, UnitRange{Int}},N}}, false}}) where {T,N,D,DA<:AbstractArray{T,D},K,M} = RectilinearArrayStyle{N}()
 
 # Define the similar function
 function Base.similar(A::RectilinearArray{T,N}) where {T,N}
@@ -305,8 +311,8 @@ end
 
 # Specify how similar produces arrays for broadcasting
 function Base.similar(
-  bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{RectilinearArray}}, ::Type{ElType}
-) where {ElType}
+    bc::Broadcast.Broadcasted{RectilinearArrayStyle{N}}, ::Type{ElType}
+) where {ElType,N}
   A = find_ra(bc)
   RectilinearArray(similar(A.data, A.dims), A.fixed_indices)
 end
@@ -315,15 +321,15 @@ find_ra(bc::Base.Broadcast.Broadcasted) = find_ra(bc.args)
 find_ra(args::Tuple) = find_ra(find_ra(args[1]), Base.tail(args))
 find_ra(x) = x
 find_ra(::Tuple{}) = nothing
-find_ra(a::RectilinearArray, rest) = a
+find_ra(a::AnyRectilinearArray, rest) = parent(a)
 find_ra(::Any, rest) = find_ra(rest)
 
-arg_flatten(arg::RectilinearArray, A) = arg.data
+arg_flatten(arg::AnyRectilinearArray, A) = parent(arg).data
 arg_flatten(arg::Base.Broadcast.Broadcasted, A) = arg_flatten(Base.materialize(arg), A)
-arg_flatten(arg::AbstractArray, A) = _drop_dims(arg, A.fixed_indices, KernelAbstractions.get_backend(A))
+arg_flatten(arg::AbstractArray, A) = _drop_dims(arg, parent(A).fixed_indices, KernelAbstractions.get_backend(A))
 arg_flatten(arg, A) = arg
 
-function Base.broadcasted(f, bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{RectilinearArray}, T}) where {T}
+function Base.broadcasted(f, bc::Broadcast.Broadcasted{RectilinearArrayStyle{N}, T}) where {T,N}
     A = find_ra(bc)
     Atype = typeof(A)
     data_args = ntuple(i -> begin
@@ -348,23 +354,22 @@ function copyto_assist(dest::SubArray)
     revised_inds = _drop_index(inds, A.valid_indices)
     return view(A.data, revised_inds...)
 end
-# SubArray{T,N,RectilinearArray{T,N,D,A,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false}
-function Base.copyto!(dest::SubArray{T,N,RectilinearArray{T,N,D,DA,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false}, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}}) where {T,N,D,DA,K,M}
-    A = find_ra(bc)
-
-    data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
-
-    raw_bc = Broadcast.broadcasted(bc.f, data_args...)
-
-    if dest isa RectilinearArray
-        copyto!(dest.data, raw_bc)
-    else 
-        copyto!(copyto_assist(dest), raw_bc)
-    end
-
-    return dest
-end
-function Base.copyto!(dest::RectilinearArray, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}})
+# function Base.copyto!(dest::SubArray{T,N,RectilinearArray{T,N,D,DA,K,M},<:Tuple{Vararg{Union{Integer,UnitRange{Int}},N}},false}, bc::Broadcast.Broadcasted{<:Broadcast.ArrayStyle{RectilinearArray}}) where {T,N,D,DA,K,M}
+#     A = find_ra(bc)
+# 
+#     data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
+# 
+#     raw_bc = Broadcast.broadcasted(bc.f, data_args...)
+# 
+#     if dest isa RectilinearArray
+#         copyto!(dest.data, raw_bc)
+#     else 
+#         copyto!(copyto_assist(dest), raw_bc)
+#     end
+# 
+#     return dest
+# end
+function Base.copyto!(dest::AnyRectilinearArray, bc::Broadcast.Broadcasted{RectilinearArrayStyle{N}}) where {N}
     A = find_ra(bc)
 
     data_args = ntuple(i -> arg_flatten(bc.args[i], A), length(bc.args))
